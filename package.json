@@ -39,7 +39,7 @@
   "author": "Flaconi GmbH (based on original work by k1LoW <k1lowxb@gmail.com>)",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Flaconi/serverless-serverless-s3-sync.git"
+    "url": "git+https://github.com/Flaconi/serverless-s3-sync.git"
   },
   "license": "MIT",
   "dependencies": {
