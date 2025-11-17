@@ -715,11 +715,7 @@ class ServerlessS3Sync {
   }
 
   getBucketPrefix(s) {
-    const prefix = s.bucketPrefix || '';
-    if (!prefix) {
-      throw new Error('bucketPrefix is required for multi-tenant deployments');
-    }
-    return prefix;
+    return s.bucketPrefix || '';
   }
 
   extractMetaParams(param) {
@@ -951,17 +947,24 @@ class ServerlessS3Sync {
     const promises = s3Sync.map((s, index) => {
       return this.getBucketName(s)
         .then(bucketName => {
-          return new Promise((resolve) => {
+          const prefix = this.getBucketPrefix(s);
+          
+          // Security check: prevent accidental deletion of entire bucket contents
+          if (!prefix || prefix.trim() === '') {
+            throw new Error('bucketPrefix is required for remove operations to prevent accidental deletion of entire bucket contents');
+          }
+          
+          return new Promise((resolve, reject) => {
             const params = {
               s3Params: {
                 Bucket: bucketName,
-                Prefix: this.getBucketPrefix(s)
+                Prefix: prefix
               }
             };
 
             const uploader = this.client().deleteDir(params);
             uploader.on('error', (err) => {
-              throw err;
+              reject(err);
             });
             uploader.on('end', () => {
               resolve('done');
@@ -969,9 +972,6 @@ class ServerlessS3Sync {
 
             uploader.start();
           });
-        })
-        .catch(e => {
-          throw e;
         });
     });
 

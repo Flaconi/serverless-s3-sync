@@ -244,7 +244,10 @@ describe('ServerlessS3Sync - Feature Compatibility Tests', () => {
     test('getBucketPrefix should return correct prefix', () => {
       const config = { bucketPrefix: 'assets/' };
       expect(plugin.getBucketPrefix(config)).toBe('assets/');
+      
+      // Should allow empty prefix for sync operations (backward compatibility)
       expect(plugin.getBucketPrefix({})).toBe('');
+      expect(plugin.getBucketPrefix({ bucketPrefix: '' })).toBe('');
     });
   });
 
@@ -364,6 +367,24 @@ describe('ServerlessS3Sync - Feature Compatibility Tests', () => {
       expect(client).toBeDefined();
       // Verify that middleware was added for offline mode
       expect(client.s3Client.middlewareStack.add).toHaveBeenCalled();
+    });
+  });
+
+  describe('Security Features', () => {
+    test('remove operation should require bucketPrefix for safety', async () => {
+      // Mock s3Sync configuration without bucketPrefix (single config, not array)
+      plugin.serverless.service.custom.s3Sync = {
+        bucketName: 'test-bucket',
+        localDir: './test'
+        // No bucketPrefix - this should cause remove to fail
+      };
+
+
+
+      // Remove operation should fail without bucketPrefix
+      await expect(plugin.remove()).rejects.toThrow(
+        'bucketPrefix is required for remove operations to prevent accidental deletion of entire bucket contents'
+      );
     });
   });
 
