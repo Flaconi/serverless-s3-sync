@@ -1,0 +1,228 @@
+---
+name: Release deploy
+
+on:
+  push:
+    branches: [ "**" ]
+    tags:
+      - 'v*'  # NPM recommended: trigger on version tags
+  release:
+    types: [ published ]
+  workflow_dispatch:
+    inputs:
+      force_prerelease:
+        description: 'Force create prerelease (ignore change detection)'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  changed_files:
+    if: ${{ !contains(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-24.04
+    name: Test changed-files
+    outputs:
+      src_any_changed: ${{ steps.changed-files.outputs.src_any_changed }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Debug workflow trigger
+        run: |
+          echo "🔍 Workflow Debug Information:"
+          echo "Event: ${{ github.event_name }}"
+          echo "Ref: ${{ github.ref }}"
+          echo "Branch: ${{ github.ref_name }}"
+          echo "Pusher: ${{ github.event.pusher.name }}"
+          echo "Actor: ${{ github.actor }}"
+          echo "Is tag: ${{ contains(github.ref, 'refs/tags/') }}"
+      - name: Get changed files
+        id: changed-files
+        uses: tj-actions/changed-files@v47
+        with:
+          files_yaml: |
+            src:
+              - 'index.js'
+              - 'getAwsOptions.js'
+              - 'resolveStackOutput.js'
+              - 'package.json'
+              - 'package-lock.json'
+              - 'test/**/*'
+              - 'README.md'
+              - 'CHANGELOG.md'
+      - name: List all changed files
+        run: |
+          echo "📁 Changed Files Debug:"
+          echo "Head SHA: ${{ github.sha }}"
+          echo "Any source changes: ${{ steps.changed-files.outputs.src_any_changed }}"
+          echo "Source files changed: ${{ steps.changed-files.outputs.src_all_changed_files }}"
+          echo "All outputs: ${{ toJSON(steps.changed-files.outputs) }}"
+
+  build:
+    if: ${{ !contains(github.ref, 'refs/tags/') }}
+    needs: changed_files
+    runs-on: ubuntu-24.04
+    name: Build and Test
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      
+      - name: Skip check
+        id: skip_check
+        run: |
+          SHOULD_SKIP="${{ github.event.pusher.name != 'bot-shop-ci' && needs.changed_files.outputs.src_any_changed != 'true' }}"
+          echo "should_skip=$SHOULD_SKIP" >> $GITHUB_OUTPUT
+          if [[ "$SHOULD_SKIP" == "true" ]]; then
+            echo "⏭️ Skipping build - no relevant changes detected"
+            exit 0
+          fi
+          echo "✅ Proceeding with build"
+      
+      - name: Setup Node.js and Install
+        if: steps.skip_check.outputs.should_skip != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+          cache: 'npm'
+      
+      - name: Install dependencies and build
+        if: steps.skip_check.outputs.should_skip != 'true'
+        run: |
+          npm ci
+          npm run build
+
+  prerelease:
+    needs: [changed_files, build]
+    if: ${{ (needs.changed_files.outputs.src_any_changed == 'true' || github.event.inputs.force_prerelease == 'true') && !contains(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-24.04
+    name: Create Prerelease
+    permissions:
+      contents: write # Required for creating releases and tags
+      id-token: write # Required for OIDC token
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"  # NPM recommended: Node 20
+          registry-url: 'https://registry.npmjs.org'
+          scope: '@flaconi'
+          cache: 'npm'
+      
+      # NPM recommended: Ensure npm 11.5.1 or later is installed
+      - name: Update npm
+        run: npm install -g npm@latest
+      
+      - name: Configure Git
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      # NPM recommended: Run tests before publish
+      - name: Run tests
+        run: npm test
+      
+      - name: Create prerelease version
+        id: version
+        run: |
+          # Generate prerelease version with run ID
+          CURRENT_VERSION=$(node -p "require('./package.json').version" | sed 's/-beta\..*//')
+          NEW_VERSION="${CURRENT_VERSION}-beta.${{ github.run_id }}"
+          echo "📦 Creating prerelease version: $NEW_VERSION"
+          
+          # Update version
+          npm version $NEW_VERSION --no-git-tag-version
+          
+          # Run build command
+          npm run build
+          
+          echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+      
+
+      
+      - name: Build if present
+        run: npm run build --if-present
+      
+      - name: Publish Prerelease to NPM with Provenance
+        run: |
+          echo "🚀 Publishing prerelease with OIDC provenance..."
+          echo "Version: ${{ steps.version.outputs.new_version }}"
+          
+          # NPM recommended: Simple publish with automatic provenance
+          npm publish --tag beta
+      
+      - name: Create GitHub Release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ steps.version.outputs.new_version }}
+          release_name: Prerelease v${{ steps.version.outputs.new_version }}
+          body: |
+            🚀 **Prerelease Version**: `${{ steps.version.outputs.new_version }}`
+            
+            This is an automated prerelease created from branch `${{ github.ref_name }}`.
+            
+            **Installation:**
+            ```bash
+            npm install @flaconi/serverless-s3-sync@${{ steps.version.outputs.new_version }}
+            # or with beta tag
+            npm install @flaconi/serverless-s3-sync@beta
+            ```
+            
+            **Changes in this build:**
+            - Branch: `${{ github.ref_name }}`
+            - Commit: `${{ github.sha }}`
+            - Workflow: `${{ github.workflow }}`
+            - Run ID: `${{ github.run_id }}`
+          draft: false
+          prerelease: true
+
+  publish:
+    if: ${{ contains(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-24.04
+    name: Publish Release
+    permissions:
+      contents: write # Required for creating releases and tags
+      id-token: write # Required for OIDC token
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"  # NPM recommended: Node 20
+          registry-url: 'https://registry.npmjs.org'
+      
+      # NPM recommended: Ensure npm 11.5.1 or later is installed
+      - name: Update npm
+        run: npm install -g npm@latest
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      # NPM recommended: Run tests before publish
+      - name: Run tests
+        run: npm test
+      
+      - name: Build if present
+        run: npm run build --if-present
+      
+      - name: Publish Production Release to NPM with Provenance
+        run: |
+          echo "🚀 Publishing production release with OIDC provenance..."
+          echo "Version: $(node -p "require('./package.json').version")"
+          
+          # NPM recommended: Simple publish with automatic provenance
+          npm publish

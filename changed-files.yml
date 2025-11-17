@@ -1,0 +1,9 @@
+src:
+  - 'index.js'
+  - 'getAwsOptions.js'
+  - 'resolveStackOutput.js'
+  - 'package.json'
+  - 'package-lock.json'
+  - 'test/**/*'
+  - 'README.md'
+  - 'CHANGELOG.md'
