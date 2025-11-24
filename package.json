@@ -1,25 +1,82 @@
 {
-  "name": "serverless-s3-sync",
-  "version": "3.4.0",
-  "description": "A plugin to sync local directories and S3 prefixes for Serverless Framework.",
+  "name": "@flaconi/serverless-s3-sync",
+  "version": "4.1.2-beta.test",
+  "description": "A plugin to sync local directories and S3 prefixes for Serverless Framework. Updated to use AWS SDK v3 with 100% feature compatibility.",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "jest",
+    "test:coverage": "jest --coverage",
+    "test:watch": "jest --watch",
+    "test:basic": "node test/basic-test.js",
+    "test:ci": "npm run test:coverage && npm run test:basic",
+    "lint": "echo 'No linting configured yet - consider adding ESLint'",
+    "type-check": "echo 'No type checking configured yet - consider adding TypeScript'",
+    "build": "npm pack",
+    "release:status": "bash release.sh status",
+    "release:patch": "bash release.sh release patch",
+    "release:minor": "bash release.sh release minor",
+    "release:major": "bash release.sh release major",
+    "release:prerelease": "bash release.sh prerelease",
+    "release:clean": "bash release.sh clean",
+    "changelog": "bash release.sh changelog",
+    "prepublishOnly": "npm run test:ci",
+    "dev": "echo 'Development mode - use npm run test:watch for TDD'",
+    "start": "echo '@flaconi/serverless-s3-sync is a Serverless Framework plugin. Add it to your serverless.yml file.'"
   },
   "keywords": [
     "serverless",
-    "s3"
+    "s3",
+    "aws-sdk-v3",
+    "aws",
+    "sync",
+    "deploy",
+    "static-sites",
+    "cdn",
+    "assets",
+    "metadata",
+    "bucket-tags"
   ],
-  "author": "k1LoW <k1lowxb@gmail.com> (https://github.com/k1LoW)",
-  "repository": "k1LoW/serverless-s3-sync",
+  "author": "Flaconi GmbH (based on original work by k1LoW <k1lowxb@gmail.com>)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Flaconi/serverless-s3-sync.git"
+  },
   "license": "MIT",
   "dependencies": {
-    "@auth0/s3": "^1.0.0",
+    "@aws-sdk/client-cloudformation": "^3.800.0",
+    "@aws-sdk/client-s3": "^3.800.0",
     "bluebird": "^3.5.4",
     "mime": "^2.4.4",
     "minimatch": "^3.0.4"
   },
   "peerDependencies": {
     "serverless": "3.x || 4.x"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
+  },
+  "homepage": "https://github.com/Flaconi/serverless-serverless-s3-sync#readme",
+  "bugs": {
+    "url": "https://github.com/Flaconi/serverless-serverless-s3-sync/issues"
+  },
+  "packageManager": "yarn@4.11.0",
+  "jest": {
+    "testEnvironment": "node",
+    "collectCoverageFrom": [
+      "index.js",
+      "getAwsOptions.js",
+      "resolveStackOutput.js"
+    ],
+    "coverageReporters": [
+      "text",
+      "lcov",
+      "html"
+    ],
+    "testMatch": [
+      "**/test/**/feature-compatibility-test.js"
+    ]
   }
 }

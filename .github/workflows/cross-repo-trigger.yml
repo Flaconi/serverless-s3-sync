@@ -1,0 +1,407 @@
+name: Cross-Repository Release Trigger
+
+on:
+  repository_dispatch:
+    types: 
+      - release-trigger
+      - release-patch
+      - release-minor  
+      - release-major
+      - release-prerelease
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.action }}
+  cancel-in-progress: false
+
+jobs:
+  # Validate external trigger
+  validate-trigger:
+    name: Validate External Trigger
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.validate.outputs.version }}
+      version-type: ${{ steps.validate.outputs.version-type }}
+      release-notes: ${{ steps.validate.outputs.release-notes }}
+      triggered-by: ${{ steps.validate.outputs.triggered-by }}
+      source-repo: ${{ steps.validate.outputs.source-repo }}
+      should-proceed: ${{ steps.validate.outputs.should-proceed }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate trigger payload
+        id: validate
+        run: |
+          echo " Validating external trigger..."
+          echo "Event action: ${{ github.event.action }}"
+          echo "Client payload: ${{ toJson(github.event.client_payload) }}"
+          
+          # Extract payload data
+          VERSION="${{ github.event.client_payload.version || '' }}"
+          VERSION_TYPE="${{ github.event.client_payload.version_type || '' }}"
+          RELEASE_NOTES="${{ github.event.client_payload.release_notes || '' }}"
+          TRIGGERED_BY="${{ github.event.client_payload.triggered_by || github.actor }}"
+          SOURCE_REPO="${{ github.event.client_payload.source_repo || 'Unknown' }}"
+          REF="${{ github.event.client_payload.ref || github.ref }}"
+          
+          echo "Parsed payload:"
+          echo "  Version: '$VERSION'"
+          echo "  Version Type: '$VERSION_TYPE'"
+          echo "  Triggered By: '$TRIGGERED_BY'"
+          echo "  Source Repo: '$SOURCE_REPO'"
+          echo "  Ref: '$REF'"
+          
+          # Determine version type from action if not provided
+          case "${{ github.event.action }}" in
+            "release-patch")
+              VERSION_TYPE="patch"
+              ;;
+            "release-minor")
+              VERSION_TYPE="minor"
+              ;;
+            "release-major")
+              VERSION_TYPE="major"
+              ;;
+            "release-prerelease")
+              VERSION_TYPE="prerelease"
+              ;;
+            "release-trigger")
+              # Use provided version_type or default to patch
+              if [[ -z "$VERSION_TYPE" ]]; then
+                VERSION_TYPE="patch"
+              fi
+              ;;
+            *)
+              echo " Unknown action: ${{ github.event.action }}"
+              exit 1
+              ;;
+          esac
+          
+          # Validate version if provided
+          if [[ -n "$VERSION" ]]; then
+            if ! echo "$VERSION" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9\.-]+)?$'; then
+              echo " Invalid version format: $VERSION"
+              echo "Expected format: x.y.z or x.y.z-prerelease"
+              exit 1
+            fi
+          fi
+          
+          # Validate version type
+          case "$VERSION_TYPE" in
+            "patch"|"minor"|"major"|"prerelease"|"prepatch"|"preminor"|"premajor")
+              echo " Valid version type: $VERSION_TYPE"
+              ;;
+            *)
+              echo " Invalid version type: $VERSION_TYPE"
+              echo "Valid types: patch, minor, major, prerelease, prepatch, preminor, premajor"
+              exit 1
+              ;;
+          esac
+          
+          # Prepare release notes
+          if [[ -z "$RELEASE_NOTES" ]]; then
+            # Create auto-generated release notes
+            cat > /tmp/external_release_notes.md << 'EOL'
+          ## External Release Trigger
+          
+          This release was triggered externally by an automated process.
+          
+          ### Release Information
+          EOL
+            echo "- **Version**: ${VERSION:-'Auto-calculated'}" >> /tmp/external_release_notes.md
+            echo "- **Version Type**: $VERSION_TYPE" >> /tmp/external_release_notes.md
+            echo "- **Trigger Action**: ${{ github.event.action }}" >> /tmp/external_release_notes.md
+            echo "- **Source Repository**: $SOURCE_REPO" >> /tmp/external_release_notes.md
+            echo "- **Triggered By**: $TRIGGERED_BY" >> /tmp/external_release_notes.md
+            echo "- **Target Ref**: $REF" >> /tmp/external_release_notes.md
+            echo "" >> /tmp/external_release_notes.md
+            echo "*Release notes were auto-generated as none were provided.*" >> /tmp/external_release_notes.md
+            
+            RELEASE_NOTES=$(cat /tmp/external_release_notes.md)
+          else
+            # Enhance provided release notes with trigger information
+            cat > /tmp/enhanced_release_notes.md << 'EOL'
+          EOL
+            echo "$RELEASE_NOTES" >> /tmp/enhanced_release_notes.md
+            echo "" >> /tmp/enhanced_release_notes.md
+            echo "### Trigger Information" >> /tmp/enhanced_release_notes.md
+            echo "" >> /tmp/enhanced_release_notes.md
+            echo "- **Source Repository**: $SOURCE_REPO" >> /tmp/enhanced_release_notes.md
+            echo "- **Triggered By**: $TRIGGERED_BY" >> /tmp/enhanced_release_notes.md
+            echo "- **Trigger Action**: ${{ github.event.action }}" >> /tmp/enhanced_release_notes.md
+            echo "- **Target Ref**: $REF" >> /tmp/enhanced_release_notes.md
+            
+            RELEASE_NOTES=$(cat /tmp/enhanced_release_notes.md)
+          fi
+          
+          # Set outputs
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version-type=$VERSION_TYPE" >> $GITHUB_OUTPUT
+          echo "triggered-by=$TRIGGERED_BY" >> $GITHUB_OUTPUT
+          echo "source-repo=$SOURCE_REPO" >> $GITHUB_OUTPUT
+          echo "should-proceed=true" >> $GITHUB_OUTPUT
+          
+          # Handle multiline release notes
+          echo 'release-notes<<EOF' >> $GITHUB_OUTPUT
+          echo "$RELEASE_NOTES" >> $GITHUB_OUTPUT
+          echo 'EOF' >> $GITHUB_OUTPUT
+          
+          echo " Trigger validation completed successfully"
+
+  # Security and access control
+  security-check:
+    name: Security Check
+    runs-on: ubuntu-latest
+    needs: validate-trigger
+    if: needs.validate-trigger.outputs.should-proceed == 'true'
+
+    steps:
+      - name: Check source repository
+        run: |
+          echo " Performing security checks..."
+          
+          SOURCE_REPO="${{ needs.validate-trigger.outputs.source-repo }}"
+          TRIGGERED_BY="${{ needs.validate-trigger.outputs.triggered-by }}"
+          
+          # Define allowed source repositories (customize as needed)
+          ALLOWED_REPOS=(
+            "Flaconi/serverless-serverless-s3-sync"
+            "Flaconi/design-system"
+            "Flaconi/infrastructure"
+            "Unknown"  # Allow unknown for backwards compatibility
+          )
+          
+          # Check if source repo is allowed
+          REPO_ALLOWED=false
+          for allowed_repo in "${ALLOWED_REPOS[@]}"; do
+            if [[ "$SOURCE_REPO" == "$allowed_repo" || "$SOURCE_REPO" == *"$allowed_repo"* ]]; then
+              REPO_ALLOWED=true
+              break
+            fi
+          done
+          
+          if [[ "$REPO_ALLOWED" != "true" ]]; then
+            echo " Warning: Release triggered from unrecognized repository: $SOURCE_REPO"
+            echo "Allowed repositories: ${ALLOWED_REPOS[*]}"
+            echo "Proceeding anyway, but this should be reviewed."
+          else
+            echo " Source repository is recognized: $SOURCE_REPO"
+          fi
+          
+          # Log trigger details for audit
+          echo " Trigger audit log:"
+          echo "  Timestamp: $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
+          echo "  Source Repo: $SOURCE_REPO"
+          echo "  Triggered By: $TRIGGERED_BY"
+          echo "  Action: ${{ github.event.action }}"
+          echo "  Version: ${{ needs.validate-trigger.outputs.version }}"
+          echo "  Version Type: ${{ needs.validate-trigger.outputs.version-type }}"
+          
+          echo " Security check completed"
+
+  # Execute release process
+  execute-release:
+    name: Execute Release
+    runs-on: ubuntu-latest
+    needs: [validate-trigger, security-check]
+    if: needs.validate-trigger.outputs.should-proceed == 'true'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18.x'
+          registry-url: 'https://registry.npmjs.org'
+          cache: 'npm'
+
+      - name: Configure Git
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action (External Trigger)"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: |
+          echo "🧪 Running comprehensive tests..."
+          npm test
+          npm run test:basic
+          echo " All tests passed"
+
+      - name: Calculate version
+        id: version
+        run: |
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
+          PROVIDED_VERSION="${{ needs.validate-trigger.outputs.version }}"
+          VERSION_TYPE="${{ needs.validate-trigger.outputs.version-type }}"
+          
+          echo "Current version: $CURRENT_VERSION"
+          
+          if [[ -n "$PROVIDED_VERSION" ]]; then
+            FINAL_VERSION="$PROVIDED_VERSION"
+            echo "Using provided version: $FINAL_VERSION"
+          else
+            # Calculate version based on type
+            npm install -g semver > /dev/null 2>&1 || true
+            if command -v semver &> /dev/null; then
+              FINAL_VERSION=$(semver -i $VERSION_TYPE $CURRENT_VERSION)
+            else
+              # Fallback calculation for patch releases
+              if [[ "$VERSION_TYPE" == "patch" ]]; then
+                IFS='.' read -ra VERSION_PARTS <<< "$CURRENT_VERSION"
+                MAJOR=${VERSION_PARTS[0]}
+                MINOR=${VERSION_PARTS[1]}
+                PATCH=${VERSION_PARTS[2]:-0}
+                FINAL_VERSION="$MAJOR.$MINOR.$((PATCH + 1))"
+              else
+                echo " Cannot calculate $VERSION_TYPE version without semver tool"
+                exit 1
+              fi
+            fi
+            echo "Calculated version ($VERSION_TYPE): $FINAL_VERSION"
+          fi
+          
+          # Validate final version
+          if ! echo "$FINAL_VERSION" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9\.-]+)?$'; then
+            echo " Invalid final version: $FINAL_VERSION"
+            exit 1
+          fi
+          
+          echo "final-version=$FINAL_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Check version availability
+        run: |
+          FINAL_VERSION="${{ steps.version.outputs.final-version }}"
+          
+          # Check if version exists on NPM
+          if npm view @flaconi/serverless-s3-sync@$FINAL_VERSION version &>/dev/null; then
+            echo " Version $FINAL_VERSION already exists on NPM"
+            exit 1
+          fi
+          
+          # Check if git tag exists
+          if git tag -l "v$FINAL_VERSION" | grep -q "v$FINAL_VERSION"; then
+            echo " Version $FINAL_VERSION already exists as git tag"
+            exit 1
+          fi
+          
+          echo " Version $FINAL_VERSION is available"
+
+      - name: Update version and create tag
+        run: |
+          FINAL_VERSION="${{ steps.version.outputs.final-version }}"
+          
+          echo " Updating package version to $FINAL_VERSION"
+          npm version $FINAL_VERSION --no-git-tag-version
+          
+          # Commit version change with proper escaping
+          git add package.json package-lock.json
+          
+          # Create commit message in a file to handle multiline properly
+          cat > /tmp/commit_msg.txt << 'EOF'
+          chore: bump version to $FINAL_VERSION
+          
+          Triggered by: ${{ needs.validate-trigger.outputs.triggered-by }}
+          Source: ${{ needs.validate-trigger.outputs.source-repo }}
+          Action: ${{ github.event.action }}
+          
+          [skip ci]
+          EOF
+          
+          # Replace placeholder with actual version
+          sed -i "s/\$FINAL_VERSION/$FINAL_VERSION/g" /tmp/commit_msg.txt
+          
+          git commit -F /tmp/commit_msg.txt
+          
+          # Create and push tag
+          git tag "v$FINAL_VERSION"
+          echo " Created version $FINAL_VERSION"
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ steps.version.outputs.final-version }}
+          release_name: Release v${{ steps.version.outputs.final-version }} (External Trigger)
+          body: ${{ needs.validate-trigger.outputs.release-notes }}
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.final-version, '-') }}
+
+      - name: Publish to NPM
+        run: |
+          FINAL_VERSION="${{ steps.version.outputs.final-version }}"
+          
+          echo " Publishing to NPM..."
+          
+          if [[ "$FINAL_VERSION" =~ -.+ ]]; then
+            # Prerelease version
+            echo "Publishing as prerelease with beta tag"
+            npm publish --access public --tag beta
+          else
+            # Production version
+            echo "Publishing as production with latest tag"
+            npm publish --access public --tag latest
+          fi
+          
+          echo " Successfully published to NPM"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Push changes
+        run: |
+          echo " Pushing changes and tags"
+          git push origin HEAD:${{ github.ref_name }}
+          git push origin v${{ steps.version.outputs.final-version }}
+          echo " Changes pushed successfully"
+
+  # Notification and summary
+  notify-completion:
+    name: 📬 Notify Completion
+    runs-on: ubuntu-latest
+    needs: [validate-trigger, security-check, execute-release]
+    if: always()
+
+    steps:
+      - name: Success notification
+        if: needs.execute-release.result == 'success'
+        run: |
+          echo "🎉 External release trigger completed successfully!"
+          echo ""
+          echo "**Release Details:**"
+          echo "- Version: ${{ needs.validate-trigger.outputs.version }}"
+          echo "- Version Type: ${{ needs.validate-trigger.outputs.version-type }}"
+          echo "- Triggered By: ${{ needs.validate-trigger.outputs.triggered-by }}"
+          echo "- Source Repo: ${{ needs.validate-trigger.outputs.source-repo }}"
+          echo "- Action: ${{ github.event.action }}"
+          echo ""
+          echo "**Links:**"
+          echo "- Repository: https://github.com/${{ github.repository }}"
+          echo "- Releases: https://github.com/${{ github.repository }}/releases"
+          echo "- NPM Package: https://www.npmjs.com/package/@flaconi/serverless-s3-sync"
+
+      - name: Failure notification
+        if: failure()
+        run: |
+          echo " External release trigger failed!"
+          echo ""
+          echo "**Failure Summary:**"
+          echo "- Validation: ${{ needs.validate-trigger.result }}"
+          echo "- Security Check: ${{ needs.security-check.result }}"
+          echo "- Release Execution: ${{ needs.execute-release.result }}"
+          echo ""
+          echo "**Trigger Details:**"
+          echo "- Action: ${{ github.event.action }}"
+          echo "- Source: ${{ needs.validate-trigger.outputs.source-repo || 'Unknown' }}"
+          echo "- Triggered By: ${{ needs.validate-trigger.outputs.triggered-by || github.actor }}"
+          echo ""
+          echo "Check workflow logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

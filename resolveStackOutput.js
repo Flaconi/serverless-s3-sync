@@ -1,14 +1,15 @@
-const getAwsOptions = require('./getAwsOptions')
+const { CloudFormationClient, DescribeStacksCommand } = require('@aws-sdk/client-cloudformation');
+const getAwsOptions = require('./getAwsOptions');
 
-function resolveStackOutput(plugin, outputKey) {
-  const provider = plugin.serverless.getProvider('aws');
-  const options = getAwsOptions(provider)
-  const cfn = new provider.sdk.CloudFormation(options);
+function resolveStackOutput(serverless, outputKey) {
+  const provider = serverless.getProvider('aws');
+  const options = getAwsOptions(serverless);
+  const cfn = new CloudFormationClient(options);
   const stackName = provider.naming.getStackName();
 
-  return cfn
-    .describeStacks({ StackName: stackName })
-    .promise()
+  const command = new DescribeStacksCommand({ StackName: stackName });
+  
+  return cfn.send(command)
     .then(data => {
       const output = data.Stacks[0].Outputs.find(
         e => e.OutputKey === outputKey
